@@ -4,15 +4,17 @@ require 'byebug'
 require 'awesome_print'
 require 'json'
 require 'time'
-
+require 'gmail'
+require 'builder'
+require 'dotenv'
 
 class Wow
 
-  def search(from = 'YYZ', to = 'TLV', start_date = DateTime.now, end_date = DateTime.now + 365)
+  def search(from = 'YYZ', to = 'TLV', start_date = DateTime.now + 30, end_date = DateTime.now + 365)
     arr = []
     cur_date = start_date
     while cur_date < end_date do
-      sleep(3)
+      sleep(0.5)
       req_params = params
       req_params[:departDateFrom] = format_date(cur_date)
       req_params[:departDateTo] = format_date(cur_date + 7)
@@ -20,15 +22,15 @@ class Wow
       req_params[:arrivalDateTo] = format_date(cur_date + 21)
       puts req_params
       arr << fetch_flights(req_params)
-      cur_date += 10
+      cur_date += 7
     end
+    send_results(arr.flatten.uniq.compact)
   end
 
   def fetch_flights(params)
     uri = URI('https://booking.wowair.com/api/midgardur/v2/flight')
     uri.query = URI.encode_www_form(params)
     res = Net::HTTP.get_response(uri)
-    # puts res.body if res.is_a?(Net::HTTPSuccess)
     extract_details(JSON.parse(res.body)['flights']) unless res.body['flights'] == nil
   end
 
@@ -36,14 +38,19 @@ class Wow
     datetime.strftime("%F")
   end
 
+  def flight_hour(time_str)
+    DateTime.strptime(time_str, '%Y-%m-%dT%H:%M:%S')
+  end
+
   def extract_details(flights)
     return nil if flights.empty? || flights.nil?
-    flights.map do |flight|
+    flights.reject!{|f| f['status'] == 'Unavailable' || f['departureTime'].include?("19:00:00")}
+    res = flights.map do |flight|
       {
         origin: flight['originShortName'],
         destination: flight['destinationShortName'],
         fares: flight['fares'].map{|fare| fare['fareWithTaxes']},
-        dep_date: flight['departureTime']
+        dep_date: flight_hour(flight['departureTime'])
       }
     end
   end
@@ -72,6 +79,30 @@ class Wow
     promocode: '',
     children: 0
   }
+  end
+end
+
+def format_email(results)
+  xm = Builder::XmlMarkup.new(:indent => 4)
+  xm.table {
+    xm.tr { results[0].keys.each { |key| xm.th(key)}}
+    results.each { |row| xm.tr { row.values.each { |value| xm.td(value)}}}
+  }
+end
+
+def send_results(arr)
+  Gmail.connect('', '') do |gmail|
+    gmail.deliver do
+      to "mishan.itay@gmail.com"
+      subject "Israel Filghts"
+      text_part do
+        body "Flights Table"
+      end
+      html_part do
+        content_type 'text/html; charset=UTF-8'
+        body format_email(arr)
+      end
+    end
   end
 end
 
